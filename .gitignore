@@ -1,0 +1,30 @@
+# macOS system files
+.DS_Store
+
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+.venv/
+
+# Google API credentials
+credentials.json
+token.json
+
+# Data files
+shifts_data.json
+invoice_counter.json
+
+# Generated invoices
+*.pdf
+*.xlsx
+
+# Backup files
+backup/
