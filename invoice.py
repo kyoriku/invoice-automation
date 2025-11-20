@@ -6,10 +6,7 @@ Handles email parsing, data storage, automatic invoice numbering, and bi-weekly 
 import sys
 import os
 from dotenv import load_dotenv
-
-GREEN = "\033[32m"
-RED = "\033[31m"
-RESET = "\033[0m"
+from src.colours import GREEN, RED, RESET
 
 # Load environment variables from .env file
 load_dotenv()
@@ -767,7 +764,7 @@ class BiWeeklyInvoiceAutomator:
       hst_amount = subtotal * self.HST_RATE
       total_amount = subtotal + hst_amount
       
-      print(f"  Total Hours: {total_hours}")
+      print(f"  Total Hours: {total_hours:.2f}h")
       print(f"  Subtotal: ${subtotal:.2f}")
       print(f"  HST (13%): ${hst_amount:.2f}")
       print(f"  Total: ${total_amount:.2f}")
