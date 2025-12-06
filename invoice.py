@@ -559,6 +559,7 @@ class BiWeeklyInvoiceAutomator:
     
     if period_key in all_shifts_data:
       all_shifts_data[period_key]['invoice_generated'] = True
+      all_shifts_data[period_key]['hourly_rate'] = self.HOURLY_RATE
       self.save_shifts_data(all_shifts_data)
       print(f"Marked invoice as generated for period {period_key}")
       return True
@@ -760,7 +761,8 @@ class BiWeeklyInvoiceAutomator:
         print(f"    {shift['date']}: {shift['start_time']}-{shift['end_time']}{hours_info}")
       
       # Then show financial summary after all shifts
-      subtotal = total_hours * self.HOURLY_RATE
+      hourly_rate = data.get('hourly_rate', self.HOURLY_RATE)
+      subtotal = total_hours * hourly_rate
       hst_amount = subtotal * self.HST_RATE
       total_amount = subtotal + hst_amount
       
@@ -802,7 +804,8 @@ class BiWeeklyInvoiceAutomator:
           hours = self.calculate_shift_hours(shift['start_time'], shift['end_time'])
         total_hours += hours
       
-      subtotal = total_hours * self.HOURLY_RATE
+      hourly_rate = data.get('hourly_rate', self.HOURLY_RATE)
+      subtotal = total_hours * hourly_rate
       hst = subtotal * self.HST_RATE
       grand_total = subtotal + hst
       
@@ -893,6 +896,177 @@ class BiWeeklyInvoiceAutomator:
         year_hst = sum(p['hst'] for p in invoiced_by_year[year])
         year_subtotal = sum(p['subtotal'] for p in invoiced_by_year[year])
         print(f"   {year}: Income = ${year_subtotal:.2f}, HST = ${year_hst:.2f}")
+
+  def force_complete_period(self):
+    """Manually mark or create a period as complete for invoice generation"""
+    all_shifts_data = self.load_shifts_data()
+    
+    # Find incomplete periods
+    incomplete_periods = {}
+    for period_key, period_data in all_shifts_data.items():
+      if (period_data.get('weeks_received', 0) > 0 and 
+          not period_data.get('complete', False) and 
+          not period_data.get('invoice_generated', False)):
+        incomplete_periods[period_key] = period_data
+    
+    print("\n" + "="*50)
+    print("FORCE COMPLETE PERIOD")
+    print("="*50)
+    
+    # Show options
+    print("\nOptions:")
+    print("1. Mark existing incomplete period as complete")
+    print("2. Create and complete a new period (for holidays/closures)")
+    print("3. Cancel")
+    
+    try:
+      choice = input("\nSelect option (1-3): ").strip()
+      
+      if choice == "1":
+        # Handle existing incomplete periods
+        if not incomplete_periods:
+          print("No incomplete periods found")
+          return False
+        
+        period_key, period_data = self.select_period_from_list(
+          incomplete_periods, 
+          "Select period to mark as complete"
+        )
+        
+        if period_key is None:
+          return False
+        
+        # Show what will be marked complete
+        period_info = period_data['period_info']
+        start_str, end_str = self.format_period_dates(period_info)
+        
+        print(f"\nPeriod: {start_str} to {end_str}")
+        print(f"Weeks received: {period_data.get('weeks_received', 0)}/2")
+        print(f"Shifts: {len(period_data.get('shifts', []))}")
+        
+        # Confirm
+        if self.get_user_confirmation("\nMark this period as complete?", default="y"):
+          all_shifts_data[period_key]['complete'] = True
+          all_shifts_data[period_key]['weeks_received'] = 2
+          
+          if self.save_shifts_data(all_shifts_data):
+            print("Period marked as complete!")
+            print("You can now generate an invoice using option 1.")
+            return True
+          else:
+            print("Failed to save changes")
+            return False
+        else:
+          print("Cancelled")
+          return False
+      
+      elif choice == "2":
+        # Create a new period
+        print("\nEnter a date within the period you want to create")
+        date_input = input("Date (MM/DD format): ").strip()
+        
+        if not date_input:
+          print("Date is required")
+          return False
+        
+        # Parse date and get pay period
+        try:
+          current_year = datetime.now().year
+          date_obj = datetime.strptime(f"{date_input}/{current_year}", "%m/%d/%Y")
+          pay_period = self.get_pay_period_for_date(date_obj)
+          
+          if not pay_period:
+            print(f"Could not determine pay period for date {date_input}")
+            return False
+          
+          period_key = pay_period['period_key']
+          
+          # Check if period already exists
+          if period_key in all_shifts_data:
+            print(f"\nPeriod {period_key} already exists!")
+            print("Use option 1 instead to mark existing period as complete.")
+            return False
+          
+          # Show period details
+          start_str, end_str = self.format_period_dates(pay_period)
+          print(f"\nCreating period:")
+          print(f"  Dates: {start_str} to {end_str}")
+          print(f"  Period key: {period_key}")
+          
+          # Ask if they want to add shifts
+          add_shifts = self.get_user_confirmation("\nDo you want to add any shifts to this period?", default="n")
+          
+          shifts = []
+          if add_shifts:
+            print("\nAdd shifts (leave date blank when done):")
+            while True:
+              shift_date = input("  Shift date (MM/DD): ").strip()
+              if not shift_date:
+                break
+              
+              start_time = input("  Start time (e.g., 8:00am): ").strip()
+              end_time = input("  End time (e.g., 3:00pm): ").strip()
+              hours_input = input("  Manual hours (leave blank to calculate): ").strip()
+              
+              shift = {
+                'date': shift_date,
+                'start_time': start_time,
+                'end_time': end_time
+              }
+              
+              if hours_input:
+                shift['hours'] = float(hours_input)
+              
+              shifts.append(shift)
+              print(f"  Added shift for {shift_date}")
+          
+          # Sort shifts chronologically
+          if shifts:
+            shifts = self.sort_shifts_by_date(shifts)
+          
+          # Confirm creation
+          print(f"\nSummary:")
+          print(f"  Period: {start_str} to {end_str}")
+          print(f"  Shifts: {len(shifts)}")
+          
+          if self.get_user_confirmation("\nCreate this period as complete?", default="y"):
+            # Create the period
+            all_shifts_data[period_key] = {
+              'period_info': pay_period,
+              'shifts': shifts,
+              'weeks_received': 2,  # Mark as both weeks received
+              'complete': True,     # Mark as complete
+              'invoice_generated': False
+            }
+            
+            if self.save_shifts_data(all_shifts_data):
+              print("Period created and marked as complete!")
+              print("You can now generate an invoice using option 1.")
+              return True
+            else:
+              print("Failed to save changes")
+              return False
+          else:
+            print("Cancelled")
+            return False
+            
+        except ValueError as e:
+          print(f"Invalid date format: {e}")
+          return False
+      
+      elif choice == "3":
+        print("Cancelled")
+        return False
+      else:
+        print("Invalid choice")
+        return False
+        
+    except KeyboardInterrupt:
+      print("\nCancelled")
+      return False
+    except Exception as e:
+      print(f"Error: {e}")
+      return False
   
   def export_sheet_as_pdf(self, spreadsheet_id, output_filename):
     """Export Google Sheet as PDF file without gridlines"""
@@ -1773,21 +1947,6 @@ Best regards,
       # Search for unread Homebase emails first, then all if none unread
       mail.select('inbox')
       
-      # Try unread first
-      # result, messages = mail.search(None, 
-      #   'UNSEEN FROM "no-reply@joinhomebase.com" SUBJECT "New schedule published"')
-      
-      # if result != 'OK' or not messages[0]:
-      #   # If no unread, get the most recent one
-      #   result, messages = mail.search(None, 
-      #     'FROM "no-reply@joinhomebase.com" SUBJECT "New schedule published"')
-      #   print("No unread Homebase emails found, checking most recent...")
-      # else:
-      #   print("Found unread Homebase email")
-      
-      # if result != 'OK' or not messages[0]:
-      #   print("No Homebase emails found")
-      #   return False
       # Try new address first (unread)
       result, messages = mail.search(None, 'UNSEEN FROM "noreply@joinhomebase.com" SUBJECT "schedule"')
 
@@ -1821,17 +1980,6 @@ Best regards,
       # Parse email
       email_body = email.message_from_bytes(msg_data[0][1])
       
-      # Extract email content
-      # email_content = ""
-      # if email_body.is_multipart():
-      #   for part in email_body.walk():
-      #     if part.get_content_type() == "text/plain":
-      #       email_content = part.get_payload(decode=True).decode()
-      #       break
-      #     elif part.get_content_type() == "text/html":
-      #       email_content = part.get_payload(decode=True).decode()
-      # else:
-      #   email_content = email_body.get_payload(decode=True).decode()
       # Extract email content - prefer HTML for new format
       email_content = ""
       html_content = None
@@ -2057,11 +2205,12 @@ def main_menu():
     print("4. Delete shift manually")
     print("5. View all pay periods")
     print("6. View tax summary")
-    print("7. Exit")
+    print("7. Force complete period (for holidays/closures)")
+    print("8. Exit")
     print("-"*50)
-    
+
     try:
-      choice = input("Select option (1-7): ").strip()
+      choice = input("Select option (1-8): ").strip()
       
       if choice == "1":
         # Process schedule email and generate invoice
@@ -2100,11 +2249,14 @@ def main_menu():
         automator.view_tax_summary()
         
       elif choice == "7":
+        automator.force_complete_period()
+        
+      elif choice == "8":
         print("Goodbye!")
         break
         
       else:
-        print("Invalid choice. Please select 1-7.")
+        print("Invalid choice. Please select 1-8.")
         
     except KeyboardInterrupt:
       print("\nGoodbye!")
